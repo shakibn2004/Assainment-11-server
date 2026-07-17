@@ -7,7 +7,6 @@ const express_1 = __importDefault(require("express"));
 const dotenv_1 = __importDefault(require("dotenv"));
 const cors_1 = __importDefault(require("cors"));
 const mongodb_1 = require("mongodb");
-const jose_cjs_1 = require("jose-cjs");
 dotenv_1.default.config();
 const uri = process.env.MONGODB_URI;
 if (!uri) {
@@ -24,31 +23,97 @@ const client = new mongodb_1.MongoClient(uri, {
         deprecationErrors: true,
     },
 });
-// verify token middleware
-const jwksUrl = process.env.CLIENT_URI ? `${process.env.CLIENT_URI}/api/auth/jwks` : 'http://localhost:3000/api/auth/jwks';
-const JWKS = (0, jose_cjs_1.createRemoteJWKSet)(new URL(jwksUrl));
 const verifyToken = async (req, res, next) => {
     const authHeader = req.headers.authorization;
     if (!authHeader) {
         return res.status(401).json({ message: "Unauthorized" });
     }
-    const token = authHeader.split(" ")[1];
+    const token = authHeader.split(" ")[1]?.trim();
     if (!token) {
         return res.status(401).json({ message: "Unauthorized" });
     }
     try {
-        const { payload } = await (0, jose_cjs_1.jwtVerify)(token, JWKS);
-        req.user = payload;
+        const sessions = db.collection('session');
+        console.log(`verifyToken: Searching for token exactly: "${token}"`);
+        const session = await sessions.findOne({ token: token });
+        if (!session) {
+            console.log('verifyToken: Session not found for token:', token);
+            return res.status(401).json({ message: "Unauthorized: Invalid session" });
+        }
+        if (new Date(session.expiresAt) < new Date()) {
+            console.log('verifyToken: Session expired at', session.expiresAt);
+            return res.status(401).json({ message: "Unauthorized: Session expired" });
+        }
+        req.user = { userId: session.userId };
         next();
     }
     catch (error) {
         console.log('error', error);
-        return res.status(403).json({ message: "Forbidden" });
+        return res.status(500).json({ message: "Internal server error" });
     }
 };
 const db = client.db("Assainment-11");
 const campaigns = db.collection('campaigns');
-// Get all campaigns or filter by featured
+const users = db.collection('user'); // BetterAuth default user collection
+const isAdmin = async (req, res, next) => {
+    try {
+        const userId = req.user?.userId;
+        if (!userId) {
+            console.log('isAdmin: No userId found in req.user');
+            return res.status(401).json({ message: "Unauthorized" });
+        }
+        const user = await users.findOne({ _id: userId });
+        if (!user) {
+            console.log('isAdmin: User not found for id:', userId);
+            return res.status(403).json({ message: "Forbidden: User not found" });
+        }
+        if (user.role?.toLowerCase() !== 'admin') {
+            console.log('isAdmin: User is not admin. Role:', user.role);
+            return res.status(403).json({ message: "Forbidden: Admin access required" });
+        }
+        next();
+    }
+    catch (e) {
+        console.log('isAdmin error:', e);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+};
+// --- USERS API (Admin Only) ---
+app.get('/users', async (req, res) => {
+    const result = await users.find({}).toArray();
+    // map _id to id for frontend
+    const mapped = result.map(u => ({ ...u, id: u._id }));
+    res.send(mapped);
+});
+app.patch('/users/:id', async (req, res) => {
+    const id = req.params.id;
+    const { role, status } = req.body;
+    const updateData = {};
+    if (role)
+        updateData.role = role;
+    if (status)
+        updateData.status = status;
+    const result = await users.updateOne({ _id: new mongodb_1.ObjectId(id) }, { $set: updateData });
+    res.send(result);
+});
+app.delete('/users/:id', async (req, res) => {
+    const id = req.params.id;
+    const result = await users.deleteOne({ _id: new mongodb_1.ObjectId(id) });
+    res.send(result);
+});
+// Test route to verify DB connection and token querying
+app.get('/test-session/:token', async (req, res) => {
+    try {
+        const t = req.params.token;
+        const session = await db.collection('session').findOne({ token: t });
+        res.json({ found: !!session, session });
+    }
+    catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+// --- CAMPAIGNS API ---
+// Get all campaigns or filter by featured/status/creator
 app.get('/campaigns', async (req, res) => {
     const query = {};
     if (req.query.featured === 'true') {
@@ -56,6 +121,9 @@ app.get('/campaigns', async (req, res) => {
     }
     if (req.query.creatorId) {
         query.creatorId = req.query.creatorId;
+    }
+    if (req.query.status) {
+        query.status = req.query.status;
     }
     const result = await campaigns.find(query).toArray();
     res.send(result);
