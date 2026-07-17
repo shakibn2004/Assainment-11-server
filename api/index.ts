@@ -25,9 +25,7 @@ const client = new MongoClient(uri, {
     },
 });
 
-// verify token middleware
-const jwksUrl = process.env.CLIENT_URI ? `${process.env.CLIENT_URI}/api/auth/jwks` : 'http://localhost:3000/api/auth/jwks';
-const JWKS = createRemoteJWKSet(new URL(jwksUrl));
+// (Removed unused JWKS initialization)
 
 export interface AuthenticatedRequest extends Request {
     user?: any; // You can type this more strictly based on your JWT payload
@@ -43,12 +41,22 @@ const verifyToken = async (req: AuthenticatedRequest, res: Response, next: NextF
         return res.status(401).json({ message: "Unauthorized" });
     }
     try {
-        const { payload } = await jwtVerify(token, JWKS);
-        req.user = payload;
+        const sessions = db.collection('session');
+        const session = await sessions.findOne({ token: token });
+        if (!session) {
+            console.log('verifyToken: Session not found for token:', token.substring(0, 5) + '...');
+            return res.status(401).json({ message: "Unauthorized: Invalid session" });
+        }
+        if (new Date(session.expiresAt) < new Date()) {
+            console.log('verifyToken: Session expired at', session.expiresAt);
+            return res.status(401).json({ message: "Unauthorized: Session expired" });
+        }
+        
+        req.user = { userId: session.userId };
         next();
     } catch (error) {
         console.log('error', error);
-        return res.status(403).json({ message: "Forbidden" });
+        return res.status(500).json({ message: "Internal server error" });
     }
 };
 
@@ -58,16 +66,24 @@ const users = db.collection('user'); // BetterAuth default user collection
 
 const isAdmin = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<any> => {
     try {
-        // BetterAuth JWT typically stores id or sub
-        const userId = req.user?.id || req.user?.userId || req.user?.sub; 
-        if (!userId) return res.status(401).json({ message: "Unauthorized" });
+        const userId = req.user?.userId; 
+        if (!userId) {
+            console.log('isAdmin: No userId found in req.user');
+            return res.status(401).json({ message: "Unauthorized" });
+        }
 
-        const user = await users.findOne({ id: userId });
-        if (!user || user.role?.toLowerCase() !== 'admin') {
+        const user = await users.findOne({ _id: userId });
+        if (!user) {
+            console.log('isAdmin: User not found for id:', userId);
+            return res.status(403).json({ message: "Forbidden: User not found" });
+        }
+        if (user.role?.toLowerCase() !== 'admin') {
+            console.log('isAdmin: User is not admin. Role:', user.role);
             return res.status(403).json({ message: "Forbidden: Admin access required" });
         }
         next();
     } catch (e) {
+        console.log('isAdmin error:', e);
         return res.status(500).json({ message: "Internal server error" });
     }
 };
@@ -76,7 +92,9 @@ const isAdmin = async (req: AuthenticatedRequest, res: Response, next: NextFunct
 
 app.get('/users', verifyToken, isAdmin, async (req: Request, res: Response) => {
     const result = await users.find({}).toArray();
-    res.send(result);
+    // map _id to id for frontend
+    const mapped = result.map(u => ({ ...u, id: u._id }));
+    res.send(mapped);
 });
 
 app.patch('/users/:id', verifyToken, isAdmin, async (req: Request, res: Response): Promise<any> => {
@@ -88,7 +106,7 @@ app.patch('/users/:id', verifyToken, isAdmin, async (req: Request, res: Response
     if (status) updateData.status = status;
 
     const result = await users.updateOne(
-        { id: id },
+        { _id: new ObjectId(id as string) },
         { $set: updateData }
     );
     res.send(result);
@@ -96,7 +114,7 @@ app.patch('/users/:id', verifyToken, isAdmin, async (req: Request, res: Response
 
 app.delete('/users/:id', verifyToken, isAdmin, async (req: Request, res: Response): Promise<any> => {
     const id = req.params.id;
-    const result = await users.deleteOne({ id: id });
+    const result = await users.deleteOne({ _id: new ObjectId(id as string) });
     res.send(result);
 });
 
