@@ -2,7 +2,7 @@ import express, { Request, Response, NextFunction } from "express";
 import dotenv from "dotenv";
 import cors from "cors";
 import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import { createRemoteJWKSet, jwtVerify } from "jose-cjs";
 
 dotenv.config();
 
@@ -52,14 +52,11 @@ const verifyToken = async (req: AuthenticatedRequest, res: Response, next: NextF
     }
 };
 
-// database and collection create and send data
-async function run() {
-    try {
-        const db = client.db("Assainment-11");
-        const campaigns = db.collection('campaigns');
+const db = client.db("Assainment-11");
+const campaigns = db.collection('campaigns');
 
-        // Get all campaigns or filter by featured
-        app.get('/campaigns', async (req: Request, res: Response) => {
+// Get all campaigns or filter by featured
+app.get('/campaigns', async (req: Request, res: Response) => {
             const query: any = {};
             if (req.query.featured === 'true') {
                 query.featured = true;
@@ -135,13 +132,12 @@ async function run() {
             res.send(result);
         });
 
-    } finally {
-        // await client.close()
-    }
+
+
+if (!process.env.VERCEL) {
+    app.listen(PORT, () => {
+        console.log(`Server running on port ${PORT}`);
+    });
 }
 
-run().catch(console.dir);
-
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-});
+module.exports = app;
