@@ -54,8 +54,55 @@ const verifyToken = async (req: AuthenticatedRequest, res: Response, next: NextF
 
 const db = client.db("Assainment-11");
 const campaigns = db.collection('campaigns');
+const users = db.collection('user'); // BetterAuth default user collection
 
-// Get all campaigns or filter by featured
+const isAdmin = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<any> => {
+    try {
+        // BetterAuth JWT typically stores id or sub
+        const userId = req.user?.id || req.user?.userId || req.user?.sub; 
+        if (!userId) return res.status(401).json({ message: "Unauthorized" });
+
+        const user = await users.findOne({ id: userId });
+        if (!user || user.role?.toLowerCase() !== 'admin') {
+            return res.status(403).json({ message: "Forbidden: Admin access required" });
+        }
+        next();
+    } catch (e) {
+        return res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+// --- USERS API (Admin Only) ---
+
+app.get('/users', verifyToken, isAdmin, async (req: Request, res: Response) => {
+    const result = await users.find({}).toArray();
+    res.send(result);
+});
+
+app.patch('/users/:id', verifyToken, isAdmin, async (req: Request, res: Response): Promise<any> => {
+    const id = req.params.id;
+    const { role, status } = req.body;
+    
+    const updateData: any = {};
+    if (role) updateData.role = role;
+    if (status) updateData.status = status;
+
+    const result = await users.updateOne(
+        { id: id },
+        { $set: updateData }
+    );
+    res.send(result);
+});
+
+app.delete('/users/:id', verifyToken, isAdmin, async (req: Request, res: Response): Promise<any> => {
+    const id = req.params.id;
+    const result = await users.deleteOne({ id: id });
+    res.send(result);
+});
+
+// --- CAMPAIGNS API ---
+
+// Get all campaigns or filter by featured/status/creator
 app.get('/campaigns', async (req: Request, res: Response) => {
             const query: any = {};
             if (req.query.featured === 'true') {
@@ -63,6 +110,9 @@ app.get('/campaigns', async (req: Request, res: Response) => {
             }
             if (req.query.creatorId) {
                 query.creatorId = req.query.creatorId;
+            }
+            if (req.query.status) {
+                query.status = req.query.status;
             }
             const result = await campaigns.find(query).toArray();
             res.send(result);
