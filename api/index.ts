@@ -3,7 +3,9 @@ import dotenv from "dotenv";
 import cors from "cors";
 import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
 import { createRemoteJWKSet, jwtVerify } from "jose-cjs";
+import Stripe from "stripe";
 
+dotenv.config({ path: '.env.local' });
 dotenv.config();
 
 const uri = process.env.MONGODB_URI;
@@ -16,6 +18,10 @@ const PORT = process.env.PORT || 8000;
 
 app.use(cors());
 app.use(express.json());
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "", {
+  apiVersion: "2025-01-27.acacia" as any,
+});
 
 const client = new MongoClient(uri, {
     serverApi: {
@@ -212,6 +218,31 @@ app.get('/campaigns', async (req: Request, res: Response) => {
             res.send(result);
         });
 
+        // Stripe Create Payment Intent
+        app.post('/create-payment-intent', async (req: Request, res: Response): Promise<any> => {
+            try {
+                const { amount } = req.body;
+                
+                if (!amount) {
+                    return res.status(400).send({ error: "Amount is required" });
+                }
+
+                const paymentIntent = await stripe.paymentIntents.create({
+                    amount,
+                    currency: "usd",
+                    automatic_payment_methods: {
+                        enabled: true,
+                    },
+                });
+
+                res.send({
+                    clientSecret: paymentIntent.client_secret,
+                });
+            } catch (error: any) {
+                console.error("Stripe error:", error);
+                res.status(400).send({ error: error.message });
+            }
+        });
 
 
 if (!process.env.VERCEL) {
